@@ -1,0 +1,41 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>org.example</groupId>
+    <artifactId>HexudonTest</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+    <properties>
+        <maven.compiler.source>24</maven.compiler.source>
+        <maven.compiler.target>24</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!--  Đổi giá trị này ở dòng lệnh nếu muốn chạy GUI thay vì CLI:
+                     mvn exec:java -Dexec.mainClass=org.example.gui.HexudonGUI  -->
+        <exec.mainClass>org.example.Main</exec.mainClass>
+    </properties>
+    <dependencies>
+        <!--  Thư viện xử lý JSON (bắt buộc cho HexudonClient, HexGrid, DayPlanner)  -->
+        <dependency>
+            <groupId>org.json</groupId>
+            <artifactId>json</artifactId>
+            <version>20240303</version>
+        </dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <!--  Plugin hỗ trợ chạy trực tiếp class Main từ terminal hoặc IDE  -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.2.0</version>
+                <configuration>
+                    <!--  QUAN TRỌNG: Main.java giờ nằm trong package org.example (trước đây default
+                                             package nên chỉ ghi "Main" là đủ; giờ BẮT BUỘC ghi đầy đủ đường dẫn package)  -->
+                    <mainClass>${exec.mainClass}</mainClass>
+                </configuration>
+            </plugin>
+            <!--  TODO (tuỳ chọn): thêm maven-shade-plugin nếu muốn build ra 1 file .jar độc lập
+                             (kèm theo org.json) để chạy bằng `java -jar` ở máy không có Maven, ví dụ máy
+                             dùng trong phòng thi. Không bắt buộc nếu chỉ chạy qua `mvn exec:java`.  -->
+        </plugins>
+    </build>
+</project>
