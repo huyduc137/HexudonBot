@@ -33,7 +33,7 @@ import java.util.List;
 public class HexudonGUI extends JFrame {
 
     private static final String DEFAULT_URL = "https://hexudon.hairbui76.id.vn";
-    private static final String DEFAULT_GAME_ID = "48e8181f-ff5a-495b-b1b5-242188a06ac2";
+    private static final String DEFAULT_GAME_ID = "d2d87157-9158-484f-be37-814a0cf44524";
     private static final String DEFAULT_TEAM_ID = "21";
     private static final String DEFAULT_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MjEsIm5hbWUiOiJUTEUgU3BlZWRydW4iLCJpc19hZG1pbiI6ZmFsc2UsImlhdCI6MTc4NDU2NTMyNSwiZXhwIjoxNzg0NzM4MTI1fQ.vEWbiFCoNcaIkseS0fH-ebyPY7hK5Mlj9-Dccv5sUpo";
 
@@ -330,11 +330,21 @@ public class HexudonGUI extends JFrame {
     }
 
     private void cmdFetchDay() {
-        lblStatus.setText(" Đang tải thông tin Ngày " + currentDay + "...");
+        lblStatus.setText(" Đang tải thông tin Ngày " + currentDay + " và trạng thái Giao thông...");
         new Thread(() -> {
             try {
+                // NÂNG CẤP PHASE 1: Lấy thêm getDayInfo() để cập nhật Giao thông và Deadline
+                JSONObject dayInfo = client.getDayInfo();
                 currentState = client.getState();
                 currentDay = currentState.optInt("day", currentDay);
+
+                // Cập nhật đường bộ vào lưới HexGrid
+                JSONArray traffics = dayInfo.optJSONArray("traffics");
+                if (traffics == null) traffics = currentState.optJSONArray("traffics");
+                grid.updateTraffic(traffics);
+
+                long endsAt = dayInfo.optLong("endsAt", 0);
+                long timeLeftSec = (endsAt > 0) ? (endsAt - (System.currentTimeMillis() / 1000L)) : 0;
 
                 JSONObject teams = currentState.getJSONObject("teams");
                 JSONObject teamData = teams.optJSONObject(client.teamId);
@@ -352,9 +362,10 @@ public class HexudonGUI extends JFrame {
                     }
                 }
 
-                log("Đã tải trạng thái Ngày " + currentDay + ". Vị trí xe được cập nhật trên bản đồ.");
+                String timeMsg = (timeLeftSec > 0) ? (" (Deadline còn: " + timeLeftSec + "s)") : "";
+                log("Đã tải Ngày " + currentDay + timeMsg + ". Đã cập nhật trạng thái tắc đường trên HexGrid.");
                 SwingUtilities.invokeLater(() -> {
-                    lblDay.setText("Ngày: " + currentDay + " / " + (dayStepsList.size() - 1));
+                    lblDay.setText("Ngày: " + currentDay + " / " + (dayStepsList.size() - 1) + timeMsg);
                     mapPanel.setMapData(grid, spots, agents, new ArrayList<>());
                     lblStatus.setText(" Ngày " + currentDay + " sẵn sàng. Nhấn 'Tự động Lập kế hoạch' để tiếp tục.");
                 });
@@ -401,8 +412,16 @@ public class HexudonGUI extends JFrame {
                 JSONArray brandsArr = teamData.optJSONArray("distinct_types");
                 if (brandsArr != null) for (int i = 0; i < brandsArr.length(); i++) brandsSeen.add(brandsArr.getInt(i));
 
+                // NÂNG CẤP PHASE 1: Tính ngân sách thời gian để truyền vào strategy
+                long endsAtSec = client.getDayInfo().optLong("endsAt", 0);
+                long timeAvailableMs = (endsAtSec > 0)
+                        ? ((endsAtSec - (System.currentTimeMillis() / 1000L)) * 1000L - 1500L)
+                        : 3500L; // Mặc định 3.5s nếu luyện tập không có deadline
+
+                String strategy = "normal|timeLimit=" + timeAvailableMs;
+
                 Map<String, List<Integer>> planned =
-                        planner.plan(grid, patrolAgents, refuelAgents, spots, daySteps, brandsSeen, currentDay, "lazy");
+                        planner.plan(grid, patrolAgents, refuelAgents, spots, daySteps, brandsSeen, currentDay, strategy);
 
                 List<List<Integer>> actions = new ArrayList<>();
                 JSONArray jsonActions = new JSONArray();
@@ -413,7 +432,7 @@ public class HexudonGUI extends JFrame {
                     jsonActions.put(new JSONArray(act));
                 }
 
-                log("Đã lập kế hoạch xong cho Ngày " + currentDay + "!");
+                log("Đã lập kế hoạch Ngày " + currentDay + " (Ngân sách AI: " + timeAvailableMs + "ms)!");
                 SwingUtilities.invokeLater(() -> {
                     planJsonArea.setText(jsonActions.toString(2));
                     mapPanel.setMapData(grid, spots, mapPanel.getAgents(), actions);

@@ -6,14 +6,8 @@ import org.json.JSONObject;
 import java.util.*;
 
 /**
- * HexGrid — chỉ chịu trách nhiệm về DỮ LIỆU BẢN ĐỒ:
- *   - loại địa hình từng ô (Plain/Road/Mountain/Pond)
- *   - trạng thái đường bộ hiện tại (SMOOTH/CONGESTED/JAM)
- *   - tính số bước & nhiên liệu tiêu thụ theo địa hình
- *   - liệt kê 6 ô lân cận hợp lệ (bỏ qua Pond và ngoài biên)
- *
- * KHÔNG chứa thuật toán tìm đường (đã tách sang {@link Pathfinder})
- * để lớp này chỉ có một lý do duy nhất để thay đổi (Single Responsibility).
+ * HexGrid — Quản lý dữ liệu bản đồ và chi phí di chuyển.
+ * NÂNG CẤP PHASE 1: Thêm khả năng cập nhật trạng thái tắc đường thực tế theo từng ngày.
  */
 public class HexGrid {
     public static final int PLAIN = 0, ROAD = 1, MOUNTAIN = 2, POND = 3;
@@ -31,7 +25,7 @@ public class HexGrid {
     public final int width;
     public final int height;
     public final List<Integer> cells;
-    /** Trạng thái đường bộ hiện tại: pos -> SMOOTH/CONGESTED/JAM. Cập nhật mỗi đầu ngày bởi TrafficTracker. */
+    /** Trạng thái đường bộ hiện tại: pos -> SMOOTH/CONGESTED/JAM. */
     public Map<Integer, Integer> roadCond;
 
     public HexGrid(int width, int height, List<Integer> cells, Map<Integer, Integer> roadCond) {
@@ -39,6 +33,20 @@ public class HexGrid {
         this.height = height;
         this.cells = cells;
         this.roadCond = roadCond;
+    }
+
+    /**
+     * NÂNG CẤP PHASE 1: Cập nhật trạng thái giao thông thật từ Server vào đầu mỗi ngày.
+     * Khi gọi hàm này, travelSteps(pos) sẽ tự động trả về chi phí mới (1, 2, hoặc 4 bước).
+     */
+    public void updateTraffic(JSONArray trafficsArr) {
+        if (trafficsArr == null) return;
+        for (int i = 0; i < trafficsArr.length(); i++) {
+            JSONObject t = trafficsArr.getJSONObject(i);
+            int pos = t.getInt("pos");
+            int status = t.getInt("status"); // 0: SMOOTH, 1: CONGESTED, 2: JAM
+            roadCond.put(pos, status);
+        }
     }
 
     public static HexGrid fromMapResponse(JSONObject resp) {
@@ -89,14 +97,14 @@ public class HexGrid {
         return result;
     }
 
-    /** Số bước cần thiết để RỜI KHỎI ô {@code pos} (phụ thuộc địa hình + trạng thái đường tại thời điểm ra lệnh). */
+    /** Số bước cần thiết để rời khỏi ô pos (phụ thuộc địa hình + trạng thái tắc đường thực tế). */
     public int travelSteps(int pos) {
         int t = cells.get(pos);
         if (t == ROAD) return ROAD_STEPS.getOrDefault(roadCond.getOrDefault(pos, SMOOTH), 1);
         return (t == PLAIN) ? PLAIN_STEPS : MOUNTAIN_STEPS;
     }
 
-    /** Nhiên liệu tiêu thụ khi rời khỏi ô {@code pos}. */
+    /** Nhiên liệu tiêu thụ khi rời khỏi ô pos. */
     public int fuelCost(int pos) {
         return FUEL_COST.getOrDefault(cells.get(pos), 0);
     }
