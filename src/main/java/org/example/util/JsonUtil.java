@@ -1,25 +1,67 @@
 package org.example.util;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.List;
+
 /**
- * TODO — CHƯA IMPLEMENT. Hiện các đoạn code sau đang bị LẶP LẠI y hệt ở cả
- * HexudonEngine.generateDayPlan() và HexudonGUI.cmdFetchDay()/cmdPlanDay():
- *
- *   - Lấy teamData an toàn từ "teams" (thử cả key String lẫn key số):
- *       teams.optJSONObject(teamId) rồi fallback teams.optJSONObject(String.valueOf(teamId))
- *       rồi fallback new JSONObject()
- *   - Đọc "pos" agent: thử cả field "pos" lẫn field cũ "cell"
- *   - Convert JSONArray<JSONArray<Integer>> <-> List<List<Integer>>
- *
- * Việc cần làm: gom các hàm tiện ích tĩnh vào đây, ví dụ:
- *   public static JSONObject getTeamData(JSONObject state, String teamId)
- *   public static int getAgentPos(JSONObject agentJson)
- *   public static List<List<Integer>> toActionLists(JSONArray jsonActions)
- *   public static JSONArray fromActionLists(List<List<Integer>> actions)
- *
- * Lợi ích: nếu server đổi field "cell" -> "pos" hẳn (hoặc ngược lại), chỉ cần sửa 1 nơi
- * thay vì tìm lại từng chỗ dùng ag.has("pos") ? ... : ....
+ * JsonUtil — Lớp tiện ích xử lý JSON dùng chung cho toàn bộ Engine, GUI và Planner.
+ * Loại bỏ hoàn toàn sự lặp lại code khi parse dữ liệu từ Server HEXUDON.
  */
 public final class JsonUtil {
     private JsonUtil() {}
-    // TODO: implement các hàm tĩnh mô tả ở trên.
+
+    /**
+     * Lấy dữ liệu của đội mình một cách an toàn từ object "teams" trong state.
+     * Hỗ trợ cả key là String lẫn key là Integer (tuỳ phiên bản serialize của server).
+     */
+    public static JSONObject getTeamData(JSONObject state, String teamId) {
+        if (state == null || !state.has("teams")) return new JSONObject();
+        JSONObject teams = state.getJSONObject("teams");
+        JSONObject teamData = teams.optJSONObject(teamId);
+        if (teamData == null) {
+            teamData = teams.optJSONObject(String.valueOf(teamId));
+        }
+        return (teamData != null) ? teamData : new JSONObject();
+    }
+
+    /**
+     * Lấy vị trí cell 1D (pos) của Agent, tương thích ngược với trường "cell" cũ.
+     */
+    public static int getAgentPos(JSONObject agentJson) {
+        if (agentJson.has("pos")) return agentJson.getInt("pos");
+        if (agentJson.has("cell")) return agentJson.getInt("cell");
+        throw new IllegalArgumentException("Agent JSON không chứa trường 'pos' hoặc 'cell': " + agentJson);
+    }
+
+    /**
+     * Chuyển đổi JSONArray 2D từ Server thành List<List<Integer>> trong Java.
+     */
+    public static List<List<Integer>> toActionLists(JSONArray jsonActions) {
+        List<List<Integer>> actions = new ArrayList<>();
+        if (jsonActions == null) return actions;
+        for (int i = 0; i < jsonActions.length(); i++) {
+            JSONArray arr = jsonActions.getJSONArray(i);
+            List<Integer> list = new ArrayList<>();
+            for (int j = 0; j < arr.length(); j++) {
+                list.add(arr.getInt(j));
+            }
+            actions.add(list);
+        }
+        return actions;
+    }
+
+    /**
+     * Chuyển đổi List<List<Integer>> thành JSONArray 2D để chuẩn bị gửi POST lên Server.
+     */
+    public static JSONArray fromActionLists(List<List<Integer>> actions) {
+        JSONArray jsonActions = new JSONArray();
+        if (actions == null) return jsonActions;
+        for (List<Integer> list : actions) {
+            jsonActions.put(new JSONArray(list));
+        }
+        return jsonActions;
+    }
 }

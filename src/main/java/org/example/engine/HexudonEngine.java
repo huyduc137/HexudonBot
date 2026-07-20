@@ -59,7 +59,9 @@ public class HexudonEngine {
         if (agentsArr != null) for (int i = 0; i < agentsArr.length(); i++) agentsStarts.add(agentsArr.getInt(i));
 
         int totalSteps = dayStepsList.stream().mapToInt(Integer::intValue).sum();
-        List<JSONObject> assignments = AgentRoleAssigner.autoAssign(nAgents, fuelLimits, totalSteps, agentsStarts, grid);
+        List<JSONObject> assignments = AgentRoleAssigner.autoAssign(
+                nAgents, fuelLimits, dayStepsList, agentsStarts, grid, spots
+        );
 
         System.out.println("Đang gửi cấu hình loại Agent...");
         try {

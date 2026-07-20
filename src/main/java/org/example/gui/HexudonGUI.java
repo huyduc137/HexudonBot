@@ -33,9 +33,9 @@ import java.util.List;
 public class HexudonGUI extends JFrame {
 
     private static final String DEFAULT_URL = "https://hexudon.hairbui76.id.vn";
-    private static final String DEFAULT_GAME_ID = "d2d87157-9158-484f-be37-814a0cf44524";
+    private static final String DEFAULT_GAME_ID = "48e8181f-ff5a-495b-b1b5-242188a06ac2";
     private static final String DEFAULT_TEAM_ID = "21";
-    private static final String DEFAULT_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MjEsIm5hbWUiOiJUTEUgU3BlZWRydW4iLCJpc19hZG1pbiI6ZmFsc2UsImlhdCI6MTc4NDI5Nzc3NywiZXhwIjoxNzg0NDcwNTc3fQ.-z4bDE2tFOTll0-yaKsR6ipR-ELnlh7LlnI_nyOH2sY";
+    private static final String DEFAULT_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MjEsIm5hbWUiOiJUTEUgU3BlZWRydW4iLCJpc19hZG1pbiI6ZmFsc2UsImlhdCI6MTc4NDU2NTMyNSwiZXhwIjoxNzg0NzM4MTI1fQ.vEWbiFCoNcaIkseS0fH-ebyPY7hK5Mlj9-Dccv5sUpo";
 
     // UI Components
     private JTextField inputUrl, inputGameId, inputTeamId;
@@ -284,11 +284,14 @@ public class HexudonGUI extends JFrame {
     }
 
     private void cmdAutoRoles() {
-        List<JSONObject> suggested = AgentRoleAssigner.autoAssign(nAgents, fuelLimits, totalSteps, agentsStarts, grid);
+        // CẬP NHẬT PHASE 0: Truyền dayStepsList và spots vào bộ phân giao vai trò
+        List<JSONObject> suggested = AgentRoleAssigner.autoAssign(
+                nAgents, fuelLimits, dayStepsList, agentsStarts, grid, spots
+        );
         for (int i = 0; i < nAgents; i++) {
             agentRoleCombos.get(i).setSelectedItem(suggested.get(i).getString("type"));
         }
-        log("Đã tính toán xong vai trò gợi ý (Auto Assign).");
+        log("Đã tính toán xong vai trò gợi ý theo K-Means (Phase 0 Auto Assign).");
     }
 
     private void cmdSubmitRoles() {
