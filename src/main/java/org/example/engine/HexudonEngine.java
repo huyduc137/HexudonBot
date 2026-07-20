@@ -4,6 +4,7 @@ import org.example.client.HexudonClient;
 import org.example.grid.HexGrid;
 import org.example.planner.DayPlanner;
 import org.example.planner.LazyGreedyPlanner;
+import org.example.planner.OrienteeringPlanner;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -20,7 +21,7 @@ public class HexudonEngine {
     private final DayPlanner planner;
 
     public HexudonEngine(HexudonClient client, boolean practice) {
-        this(client, practice, new LazyGreedyPlanner());
+        this(client, practice, new OrienteeringPlanner()); // CẬP NHẬT PHASE 2: Kích hoạt AI Luyện kim!
     }
 
     public HexudonEngine(HexudonClient client, boolean practice, DayPlanner planner) {

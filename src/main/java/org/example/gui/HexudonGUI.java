@@ -5,6 +5,7 @@ import org.example.engine.AgentRoleAssigner;
 import org.example.grid.HexGrid;
 import org.example.planner.DayPlanner;
 import org.example.planner.LazyGreedyPlanner;
+import org.example.planner.OrienteeringPlanner;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -62,7 +63,7 @@ public class HexudonGUI extends JFrame {
     private int fuelLimits = 100;
 
     /** Chiến lược lập kế hoạch đang dùng cho nút "Tự động Lập kế hoạch". */
-    private final DayPlanner planner = new LazyGreedyPlanner();
+    private final DayPlanner planner = new OrienteeringPlanner();
 
     public HexudonGUI() {
         setTitle("HEXUDON Java Engine - Procon 2026 GUI");
@@ -156,7 +157,7 @@ public class HexudonGUI extends JFrame {
         dailyGroup.add(btnFetchDay);
         dailyGroup.add(Box.createVerticalStrut(5));
 
-        btnPlanDay = new JButton("2. Tự động Lập kế hoạch (Lazy)");
+        btnPlanDay = new JButton("2. Tự động Lập kế hoạch (AI SA)");
         btnPlanDay.setAlignmentX(Component.CENTER_ALIGNMENT);
         btnPlanDay.setEnabled(false);
         btnPlanDay.addActionListener(e -> cmdPlanDay());
@@ -243,6 +244,7 @@ public class HexudonGUI extends JFrame {
 
         new Thread(() -> {
             try {
+                org.example.util.MatchAuditLogger.clear();
                 client = new HexudonClient(url, gameId, teamId, token);
                 JSONObject mapResp = client.getMap();
                 grid = HexGrid.fromMapResponse(mapResp);
@@ -473,6 +475,10 @@ public class HexudonGUI extends JFrame {
                     } else {
                         log("TRẬN ĐẤU ĐÃ HOÀN TẤT ALL DAYS!");
                         lblStatus.setText(" Trận đấu kết thúc! Chúc mừng bạn hoàn thành.");
+                        String finalReport = org.example.util.MatchAuditLogger.generateFinalReport(
+                                inputGameId.getText().trim(), inputTeamId.getText().trim()
+                        );
+                        log(finalReport);
                     }
                 });
             } catch (Exception e) {
