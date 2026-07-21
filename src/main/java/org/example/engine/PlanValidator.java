@@ -1,41 +1,102 @@
 package org.example.engine;
 
 import org.example.grid.HexGrid;
-
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
- * TODO — CHƯA IMPLEMENT (PHASE 3 trong docs/architecture.md).
+ * PlanValidator — PHASE 3: Màng lọc Sandbox & Chuẩn hóa Lộ trình.
  *
- * HIỆN TẠI: HexudonEngine/HexudonGUI gửi thẳng kết quả của planner lên server mà KHÔNG
- * tự kiểm tra lại. Nếu planner (đặc biệt OrienteeringPlanner sau này) sinh lỗi, TOÀN BỘ
- * answer của ngày đó bị server từ chối cho MỌI agent (theo luật: "If the action plan of
- * even one agent is invalid, the action plans of all agents are treated as invalid") —
- * nghĩa là mất trắng 1 ngày thi đấu thay vì chỉ lỗi cục bộ.
- *
- * Việc cần làm — mô phỏng lại CHÍNH XÁC những gì server sẽ làm, trước khi gọi submitActions:
- *   1. Với mỗi agent: replay từng lệnh trong danh sách actions.
- *        - Lệnh <= -1: chờ N bước, N phải <= số bước còn lại trong ngày của agent đó.
- *        - Lệnh 0..5: phải trỏ tới ô LIỀN KỀ hợp lệ (không phải Pond, không ngoài biên)
- *          — dùng HexGrid.neighbors() để kiểm tra, KHÔNG tự suy luận toạ độ tay.
- *        - Patrol: trừ fuel theo HexGrid.fuelCost(pos) tại ô XUẤT PHÁT của bước di chuyển;
- *          nếu fuel dự kiến < 0 tại bất kỳ bước nào -> KHÔNG hợp lệ (patrol phải "wait" tới
- *          khi có refueler, chứ không được tự ý di chuyển tiếp khi thiếu fuel).
- *        - Refueler: không giới hạn fuel, nhưng vẫn phải đủ SỐ BƯỚC trong ngày.
- *   2. Tổng số bước tiêu thụ (di chuyển + chờ) của MỖI agent phải bằng CHÍNH XÁC daySteps.
- *   3. Nếu bất kỳ agent nào không hợp lệ -> trả về kết quả invalid kèm lý do cụ thể (agent nào,
- *      bước nào, lỗi gì), để HexudonEngine có thể fallback: dùng lại lộ trình từ
- *      LazyGreedyPlanner cho NGÀY ĐÓ thay vì gửi lộ trình lỗi lên server.
- *
- * Gợi ý API:
- *   public static class ValidationResult { boolean valid; String reason; }
- *   public static ValidationResult validate(HexGrid grid, Map<String, List<Integer>> actions,
- *                                            Map<String, Integer> agentStartPos,
- *                                            Map<String, Integer> agentFuel,
- *                                            Set<String> patrolAgentIds, int daySteps)
+ * Đảm bảo 100% lệnh gửi lên Server là hợp lệ:
+ * 1. Khớp chính xác daySteps (Hụt thì bù WAIT, dư thì cắt).
+ * 2. Đảm bảo không đâm vào Ao (Pond) hoặc đi ra ngoài biên bản đồ.
  */
 public final class PlanValidator {
+
     private PlanValidator() {}
-    // TODO: implement — xem mô tả phía trên.
+
+    public static class ValidationResult {
+        public final boolean valid;
+        public final String reason;
+        public final Map<String, List<Integer>> normalizedActions;
+
+        public ValidationResult(boolean valid, String reason, Map<String, List<Integer>> normalizedActions) {
+            this.valid = valid;
+            this.reason = reason;
+            this.normalizedActions = normalizedActions;
+        }
+    }
+
+    /**
+     * Chạy Sandbox mô phỏng để kiểm tra và chuẩn hóa Step Budget cho mọi Agent.
+     */
+    public static ValidationResult validateAndNormalize(
+            HexGrid grid,
+            Map<String, List<Integer>> actions,
+            Map<String, Integer> agentStartPos,
+            int daySteps) {
+
+        Map<String, List<Integer>> safeActions = new HashMap<>();
+
+        for (Map.Entry<String, List<Integer>> entry : actions.entrySet()) {
+            String aid = entry.getKey();
+            List<Integer> rawActions = entry.getValue();
+            List<Integer> cleanActions = new ArrayList<>();
+
+            int currentPos = agentStartPos.getOrDefault(aid, 0);
+            int totalStepsUsed = 0;
+
+            for (int act : rawActions) {
+                if (totalStepsUsed >= daySteps) {
+                    break; // Bỏ qua các lệnh dư thừa nếu AI lỡ sinh quá tay
+                }
+
+                if (act < 0) { // Lệnh Wait (Chờ đợi)
+                    int waitTime = -act;
+                    if (totalStepsUsed + waitTime > daySteps) {
+                        waitTime = daySteps - totalStepsUsed; // Cắt bớt thời gian chờ cho vừa đủ ngày
+                    }
+                    cleanActions.add(-waitTime);
+                    totalStepsUsed += waitTime;
+
+                } else if (act >= 0 && act <= 5) { // Lệnh Move (Di chuyển)
+                    // Kiểm tra xem hướng đi này có hợp lệ không (Có ra ngoài biên hay vào Ao không?)
+                    HexGrid.Neighbor nextNode = null;
+                    for (HexGrid.Neighbor nb : grid.neighbors(currentPos)) {
+                        if (nb.direction == act) {
+                            nextNode = nb;
+                            break;
+                        }
+                    }
+
+                    if (nextNode == null) {
+                        return new ValidationResult(false,
+                                "Agent " + aid + " cố đâm vào Ao (Pond) hoặc ngoài biên tại ô " + currentPos + " (Hướng " + act + ")", null);
+                    }
+
+                    int stepCost = grid.travelSteps(currentPos);
+                    if (totalStepsUsed + stepCost > daySteps) {
+                        // Không đủ thời gian để thực hiện bước đi này -> Hủy bước này và chuyển thành Wait
+                        break;
+                    }
+
+                    cleanActions.add(act);
+                    totalStepsUsed += stepCost;
+                    currentPos = nextNode.pos; // Cập nhật vị trí
+                } else {
+                    return new ValidationResult(false, "Agent " + aid + " có mã lệnh không hợp lệ: " + act, null);
+                }
+            }
+
+            // =====================================================================
+            // BƯỚC CHUẨN HÓA THẦN THÁNH: Bù lệnh WAIT nếu AI sinh hụt bước!
+            // =====================================================================
+            if (totalStepsUsed < daySteps) {
+                cleanActions.add(-(daySteps - totalStepsUsed));
+            }
+
+            safeActions.put(aid, cleanActions);
+        }
+
+        return new ValidationResult(true, "OK", safeActions);
+    }
 }

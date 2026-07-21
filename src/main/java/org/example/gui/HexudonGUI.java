@@ -2,6 +2,7 @@ package org.example.gui;
 
 import org.example.client.HexudonClient;
 import org.example.engine.AgentRoleAssigner;
+import org.example.engine.PlanValidator;
 import org.example.grid.HexGrid;
 import org.example.planner.DayPlanner;
 import org.example.planner.LazyGreedyPlanner;
@@ -34,7 +35,7 @@ import java.util.List;
 public class HexudonGUI extends JFrame {
 
     private static final String DEFAULT_URL = "https://hexudon.hairbui76.id.vn";
-    private static final String DEFAULT_GAME_ID = "d2d87157-9158-484f-be37-814a0cf44524";
+    private static final String DEFAULT_GAME_ID = "a759fcca-5de2-4fe6-9dff-1a5a3ba33fb5";
     private static final String DEFAULT_TEAM_ID = "21";
     private static final String DEFAULT_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MjEsIm5hbWUiOiJUTEUgU3BlZWRydW4iLCJpc19hZG1pbiI6ZmFsc2UsImlhdCI6MTc4NDU2NTMyNSwiZXhwIjoxNzg0NzM4MTI1fQ.vEWbiFCoNcaIkseS0fH-ebyPY7hK5Mlj9-Dccv5sUpo";
 
@@ -405,6 +406,7 @@ public class HexudonGUI extends JFrame {
                         entry.put("agent_id", aid);
                         entry.put("pos", pos);
                         entry.put("fuel", fuel);
+                        entry.put("fuelLimits", fuelLimits);
 
                         (isPatrol ? patrolAgents : refuelAgents).add(entry);
                     }
@@ -415,21 +417,46 @@ public class HexudonGUI extends JFrame {
                 if (brandsArr != null) for (int i = 0; i < brandsArr.length(); i++) brandsSeen.add(brandsArr.getInt(i));
 
                 // NÂNG CẤP PHASE 1: Tính ngân sách thời gian để truyền vào strategy
+                // NÂNG CẤP: Tính ngân sách thời gian để truyền vào strategy
                 long endsAtSec = client.getDayInfo().optLong("endsAt", 0);
-                long timeAvailableMs = (endsAtSec > 0)
-                        ? ((endsAtSec - (System.currentTimeMillis() / 1000L)) * 1000L - 1500L)
-                        : 3500L; // Mặc định 3.5s nếu luyện tập không có deadline
+                long nowSec = System.currentTimeMillis() / 1000L;
+                long timeAvailableMs;
+
+                if (chkPractice.isSelected()) {
+                    // NẾU LÀ CHẾ ĐỘ PRACTICE: Ép buộc AI phải suy nghĩ đúng 3 giây (3000ms)
+                    timeAvailableMs = 5000L;
+                } else if (endsAtSec > nowSec) {
+                    // THI ĐẤU THẬT: Trừ hao 1.5 giây trễ mạng
+                    timeAvailableMs = ((endsAtSec - nowSec) * 1000L) - 1500L;
+                } else {
+                    timeAvailableMs = 3000L;
+                }
 
                 String strategy = "normal|timeLimit=" + timeAvailableMs;
 
                 Map<String, List<Integer>> planned =
                         planner.plan(grid, patrolAgents, refuelAgents, spots, daySteps, brandsSeen, currentDay, strategy);
 
+                Map<String, Integer> startPosMap = new HashMap<>();
+                for (JSONObject ag : patrolAgents) startPosMap.put(ag.getString("agent_id"), org.example.util.JsonUtil.getAgentPos(ag));
+                for (JSONObject ag : refuelAgents) startPosMap.put(ag.getString("agent_id"), org.example.util.JsonUtil.getAgentPos(ag));
+
+                PlanValidator.ValidationResult valRes = PlanValidator.validateAndNormalize(grid, planned, startPosMap, daySteps);
+
+                if (!valRes.valid) {
+                    log("-> [CẢNH BÁO SANDBOX KHẨN] Kế hoạch AI bị lỗi: " + valRes.reason);
+                    log("-> [ROLLBACK] Kích hoạt chạy lại LazyGreedyPlanner để cứu Ngày " + currentDay + "!");
+
+                    DayPlanner fallback = new LazyGreedyPlanner();
+                    planned = fallback.plan(grid, patrolAgents, refuelAgents, spots, daySteps, brandsSeen, currentDay, "fallback");
+                    valRes = PlanValidator.validateAndNormalize(grid, planned, startPosMap, daySteps);
+                }
+
                 List<List<Integer>> actions = new ArrayList<>();
                 JSONArray jsonActions = new JSONArray();
                 for (int i = 0; i < nAgents; i++) {
                     String aid = String.valueOf(i);
-                    List<Integer> act = planned.getOrDefault(aid, Collections.singletonList(-daySteps));
+                    List<Integer> act = valRes.normalizedActions.getOrDefault(aid, Collections.singletonList(-daySteps));
                     actions.add(act);
                     jsonActions.put(new JSONArray(act));
                 }

@@ -8,10 +8,11 @@ import org.json.JSONObject;
 import java.util.*;
 
 /**
- * OrienteeringPlanner — Bộ não AI cốt lõi cho thi đấu thật (PHASE 2 - CÓ BỘ LOG QUY ĐẠO TỌA ĐỘ).
+ * OrienteeringPlanner — Bộ não AI cốt lõi cho thi đấu thật (PHASE 2 - ĐỒNG BỘ 100% SERVER BTC).
  *
- * Nâng cấp: Hiển thị TOÀN BỘ CHI TIẾT TỌA ĐỘ (pos) mà từng Agent đi qua trên bản đồ,
- * chi tiết số bước và số xăng tiêu thụ cho từng chặng, kèm trạng thái đứng yên (WAIT) rõ ràng!
+ * Nâng cấp tối thượng: Tích hợp cơ chế "Ăn Udon tiện đường" (En-route Automatic Collection).
+ * Mô phỏng chính xác từng bước chân trên bản đồ: Ngay khi xe đạp lên bất kỳ ô nào là Quán Udon
+ * còn kho dự trữ (dù chỉ đi ngang qua hay là đích đến), lập tức tự động thu thập và cộng điểm Z!
  */
 public class OrienteeringPlanner implements DayPlanner {
 
@@ -104,14 +105,14 @@ public class OrienteeringPlanner implements DayPlanner {
         }
 
         // CHẠY LẠI LẦN CUỐI VỚI BỘ LỘ TRÌNH VÔ ĐỊCH VÀ BẬT LOG CHI TIẾT
-        System.out.println("-> [PHASE 2 SA] Đã hoàn tất " + iterations + " vòng lặp mô phỏng. Đang xuất chi tiết tọa độ...");
+        System.out.println("-> [PHASE 2 SA] Đã hoàn tất " + iterations + " vòng lặp mô phỏng. Đang xuất chi tiết tọa độ đồng bộ Server...");
         SimResult finalLoggedSim = simulateAndScore(grid, patrolAgents, refuelAgents, activeSpots, daySteps, brandsSeen, bestTargets, currentDay, true);
 
         return finalLoggedSim.actions;
     }
 
     /**
-     * Hàm mô phỏng có hỗ trợ xuất Log Quỹ đạo tọa độ từng ô khi verbose = true.
+     * Hàm mô phỏng tất định có hỗ trợ "Ăn tiện đường" (En-route Step-by-step Scoring).
      */
     private SimResult simulateAndScore(
             HexGrid grid,
@@ -172,11 +173,32 @@ public class OrienteeringPlanner implements DayPlanner {
             int curStep = 0;
             List<Integer> myActions = actions.get(aid);
 
+            // Mỗi xe chỉ được ăn tối đa 1 suất tại mỗi quán trong cùng 1 ngày
+            Set<Integer> visitedSpotsToday = new HashSet<>();
+
             if (verbose) {
                 logBuilder.append("🚗 AGENT ").append(aid).append(" (Tuần tra - Xuất phát tại ô ").append(curPos).append(" | Xăng: ").append(curFuel).append("):\n");
             }
 
             boolean visitedAny = false;
+
+            // KIỂM TRA NGAY VỊ TRÍ XUẤT PHÁT ĐẦU NGÀY (Biết đâu xe đứng sẵn trên quán vừa được bơm kho)
+            if (activeSpots.containsKey(curPos) && !visitedSpotsToday.contains(curPos)) {
+                int remainingStock = simStocks.getOrDefault(curPos, 0);
+                if (remainingStock > 0) {
+                    simStocks.put(curPos, remainingStock - 1);
+                    visitedSpotsToday.add(curPos);
+                    uCount++;
+                    visitedAny = true;
+                    int brand = activeSpots.get(curPos).getInt("brand");
+                    if (!simGlobalSeen.contains(brand)) { cGlobal++; simGlobalSeen.add(brand); simDailySeen.add(brand); }
+                    else if (!simDailySeen.contains(brand)) { cDaily++; simDailySeen.add(brand); }
+                    if (verbose) {
+                        logBuilder.append("   ⚡ [Thu ngay đầu ngày]: Bước   0 tại ô ").append(String.format("%3d", curPos))
+                                .append(" | Thu thập BRAND ").append(brand).append(" (Kho còn ").append(remainingStock - 1).append(")\n\n");
+                    }
+                }
+            }
 
             for (int targetPos : targets) {
                 if (curStep >= daySteps) break;
@@ -193,6 +215,7 @@ public class OrienteeringPlanner implements DayPlanner {
                     break;
                 }
 
+                // CẢNH BÁO XĂNG VÀ ĐIỀU ĐỘNG TIẾP XĂNG
                 if (curFuel < reqFuel) {
                     RefuelCoordinator.RendezvousPlan plan = RefuelCoordinator.findRendezvous(
                             grid, curPos, curStep, rPos, rStepsUsed, daySteps
@@ -225,47 +248,66 @@ public class OrienteeringPlanner implements DayPlanner {
 
                 List<Integer> pathDirs = Pathfinder.reconstructPath(dr.prev, curPos, targetPos);
 
-                // IN RA CHI TIẾT QUỸ ĐẠO TỌA ĐỘ TỪNG Ô (POS)
                 if (verbose) {
                     String pathStr = formatPathCoords(grid, curPos, pathDirs);
                     logBuilder.append("   🗺️ [Lộ trình]: ").append(pathStr).append(" (Tốn ").append(reqSteps).append(" bước, ").append(reqFuel).append(" xăng)\n");
                 }
 
                 myActions.addAll(pathDirs);
-                curPos = targetPos;
-                curStep += reqSteps;
-                curFuel -= reqFuel;
 
-                int remainingStock = simStocks.getOrDefault(targetPos, 0);
-                if (remainingStock > 0) {
-                    simStocks.put(targetPos, remainingStock - 1);
-                    uCount++;
-                    visitedAny = true;
-                    int brand = activeSpots.get(targetPos).getInt("brand");
+                // =========================================================================
+                // MÔ PHỎNG TỪNG BƯỚC CHÂN (STEP-BY-STEP) ĐỂ ĂN UDON TIỆN ĐƯỜNG
+                // =========================================================================
+                for (int d : pathDirs) {
+                    int stepCost = grid.travelSteps(curPos);
+                    int fuelCost = grid.fuelCost(curPos);
 
-                    String rewardTag;
-                    if (!simGlobalSeen.contains(brand)) {
-                        cGlobal++;
-                        simGlobalSeen.add(brand);
-                        simDailySeen.add(brand);
-                        rewardTag = "★ BRAND MỚI TOÀN TRẬN (+10,000đ)";
-                    } else if (!simDailySeen.contains(brand)) {
-                        cDaily++;
-                        simDailySeen.add(brand);
-                        rewardTag = "☆ Brand mới trong ngày (+100đ)";
-                    } else {
-                        rewardTag = "• Ăn thêm phần (+1đ)";
+                    curStep += stepCost;
+                    curFuel -= fuelCost;
+
+                    // Cập nhật tọa độ sang ô tiếp theo theo hướng d
+                    for (HexGrid.Neighbor nb : grid.neighbors(curPos)) {
+                        if (nb.direction == d) {
+                            curPos = nb.pos;
+                            break;
+                        }
                     }
 
-                    if (verbose) {
-                        logBuilder.append("   🍜 [Đích đến]: Bước ").append(String.format("%3d", curStep)).append(" tại ô ").append(String.format("%3d", targetPos))
-                                .append(" | Thu thập BRAND ").append(brand).append(" (Kho còn ").append(remainingStock - 1).append(")")
-                                .append(" | ").append(rewardTag).append(" | Xăng còn: ").append(curFuel).append("\n\n");
-                    }
-                } else {
-                    if (verbose) {
-                        logBuilder.append("   🍜 [Đích đến]: Bước ").append(String.format("%3d", curStep)).append(" tại ô ").append(String.format("%3d", targetPos))
-                                .append(" | Quán đã hết Udon từ trước! (Lãng phí bước)\n\n");
+                    // KIỂM TRA XEM Ô VỪA BƯỚC VÀO CÓ PHẢI QUÁN UDON KHÔNG
+                    if (activeSpots.containsKey(curPos) && !visitedSpotsToday.contains(curPos)) {
+                        int remainingStock = simStocks.getOrDefault(curPos, 0);
+                        if (remainingStock > 0) {
+                            simStocks.put(curPos, remainingStock - 1);
+                            visitedSpotsToday.add(curPos);
+                            uCount++;
+                            visitedAny = true;
+                            int brand = activeSpots.get(curPos).getInt("brand");
+
+                            String rewardTag;
+                            if (!simGlobalSeen.contains(brand)) {
+                                cGlobal++;
+                                simGlobalSeen.add(brand);
+                                simDailySeen.add(brand);
+                                rewardTag = "★ BRAND MỚI TOÀN TRẬN (+10,000đ)";
+                            } else if (!simDailySeen.contains(brand)) {
+                                cDaily++;
+                                simDailySeen.add(brand);
+                                rewardTag = "☆ Brand mới trong ngày (+100đ)";
+                            } else {
+                                rewardTag = "• Ăn tiện đường (+1đ)";
+                            }
+
+                            if (verbose) {
+                                boolean isFinalTarget = (curPos == targetPos);
+                                String actionLabel = isFinalTarget ? "🍜 [Đích đến]" : "⚡ [Tiện đường]";
+                                logBuilder.append("   ").append(actionLabel).append(": Bước ").append(String.format("%3d", curStep)).append(" tại ô ").append(String.format("%3d", curPos))
+                                        .append(" | Thu thập BRAND ").append(brand).append(" (Kho còn ").append(remainingStock - 1).append(")")
+                                        .append(" | ").append(rewardTag).append(" | Xăng còn: ").append(curFuel).append("\n\n");
+                            }
+                        } else if (verbose && curPos == targetPos) {
+                            logBuilder.append("   🍜 [Đích đến]: Bước ").append(String.format("%3d", curStep)).append(" tại ô ").append(String.format("%3d", curPos))
+                                    .append(" | Quán đã hết Udon từ trước! (Lãng phí bước)\n\n");
+                        }
                     }
                 }
             }
@@ -274,7 +316,6 @@ public class OrienteeringPlanner implements DayPlanner {
                 logBuilder.append("   (Không thu thập được quán Udon nào trong ngày hôm nay)\n");
             }
 
-            // GHI NHẬN LỆNH ĐỨNG YÊN (WAIT) NẾU CÒN DƯ BƯỚC
             if (curStep < daySteps) {
                 int waitSteps = daySteps - curStep;
                 myActions.add(-waitSteps);
@@ -314,15 +355,13 @@ public class OrienteeringPlanner implements DayPlanner {
             logBuilder.append("========================================================================================\n");
             System.out.println(logBuilder.toString());
 
+            // Ghi nhận thành tích vào bộ kiểm toán toàn trận
             org.example.util.MatchAuditLogger.recordDay(currentDay, finalZ, (int)cGlobal, (int)cDaily, (int)uCount, simGlobalSeen);
         }
 
         return new SimResult(finalZ, actions);
     }
 
-    /**
-     * Hàm hỗ trợ: Dịch danh sách hướng đi [0..5] thành chuỗi tọa độ trực quan [pos1 ➔ pos2 ➔ pos3].
-     */
     private static String formatPathCoords(HexGrid grid, int startPos, List<Integer> dirs) {
         if (dirs == null || dirs.isEmpty()) return "[" + startPos + " (đứng yên)]";
         StringBuilder sb = new StringBuilder("[");

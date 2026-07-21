@@ -19,6 +19,7 @@ public class HexudonEngine {
     private final HexudonClient client;
     private final boolean practice;
     private final DayPlanner planner;
+    private int fuelLimits = 100;
 
     public HexudonEngine(HexudonClient client, boolean practice) {
         this(client, practice, new OrienteeringPlanner()); // CẬP NHẬT PHASE 2: Kích hoạt AI Luyện kim!
@@ -43,7 +44,7 @@ public class HexudonEngine {
         JSONArray stepsArr = mapResp.optJSONArray("daySteps");
         if (stepsArr != null) for (int i = 0; i < stepsArr.length(); i++) dayStepsList.add(stepsArr.getInt(i));
 
-        int fuelLimits = mapResp.optInt("fuelLimits", 100);
+        fuelLimits = mapResp.optInt("fuelLimits", 100);
         JSONArray agentsArr = mapResp.optJSONArray("agents");
         int nAgents = (agentsArr != null) ? agentsArr.length() : 0;
 
@@ -90,7 +91,8 @@ public class HexudonEngine {
                 timeAvailableMs = ((endsAtSec - nowSec) * 1000L) - 1500L;
             } else {
                 // Practice mode thường không trả endsAt -> Tính theo daySeconds
-                int daySecs = mapResp.optJSONArray("daySeconds").optInt(day, 5);
+                JSONArray daySecArr = mapResp.optJSONArray("daySeconds");
+                int daySecs = (daySecArr != null) ? daySecArr.optInt(day, 5) : 5;
                 timeAvailableMs = (daySecs * 1000L) - 1500L;
             }
 
@@ -136,6 +138,7 @@ public class HexudonEngine {
                 entry.put("agent_id", aid);
                 entry.put("pos", pos);
                 entry.put("fuel", fuel);
+                entry.put("fuelLimits", fuelLimits);
 
                 (isPatrol ? patrolAgents : refuelAgents).add(entry);
             }
@@ -150,10 +153,36 @@ public class HexudonEngine {
         Map<String, List<Integer>> planned =
                 planner.plan(grid, patrolAgents, refuelAgents, spots, daySteps, brandsSeen, currentDay, strategy);
 
+        Map<String, Integer> startPosMap = new HashMap<>();
+        for (JSONObject ag : patrolAgents) startPosMap.put(ag.getString("agent_id"), org.example.util.JsonUtil.getAgentPos(ag));
+        for (JSONObject ag : refuelAgents) startPosMap.put(ag.getString("agent_id"), org.example.util.JsonUtil.getAgentPos(ag));
+
+        PlanValidator.ValidationResult valRes = PlanValidator.validateAndNormalize(grid, planned, startPosMap, daySteps);
+
+        if (!valRes.valid) {
+            System.out.println("-> [CẢNH BÁO SANDBOX KHẨN] Kế hoạch AI bị lỗi: " + valRes.reason);
+            System.out.println("-> [ROLLBACK] Kích hoạt chạy lại LazyGreedyPlanner để cứu Ngày " + currentDay + "!");
+
+            DayPlanner fallback = new LazyGreedyPlanner();
+            planned = fallback.plan(grid, patrolAgents, refuelAgents, spots, daySteps, brandsSeen, currentDay, "fallback");
+
+            // Chuẩn hóa lại lộ trình Fallback một lần nữa cho chắc ăn!
+            valRes = PlanValidator.validateAndNormalize(grid, planned, startPosMap, daySteps);
+
+            if (!valRes.valid) {
+                System.out.println("-> [LỖI TRẦM TRỌNG] Fallback cũng bị lỗi: " + valRes.reason + ". Ép đứng yên toàn bộ!");
+                planned = new HashMap<>();
+                for (String aid : startPosMap.keySet()) {
+                    planned.put(aid, Collections.singletonList(-daySteps));
+                }
+                valRes = new PlanValidator.ValidationResult(true, "Force Wait", planned);
+            }
+        }
+
         List<List<Integer>> actions = new ArrayList<>();
         for (int i = 0; i < nAgents; i++) {
             String aid = String.valueOf(i);
-            actions.add(planned.getOrDefault(aid, Collections.singletonList(-daySteps)));
+            actions.add(valRes.normalizedActions.getOrDefault(aid, Collections.singletonList(-daySteps)));
         }
         return actions;
     }
