@@ -108,4 +108,14 @@ public class HexGrid {
     public int fuelCost(int pos) {
         return FUEL_COST.getOrDefault(cells.get(pos), 0);
     }
+    public void updateTrafficFromObject(JSONObject roadCondObj) {
+        if (roadCondObj == null) return;
+        for (String key : roadCondObj.keySet()) {
+            try {
+                int pos = Integer.parseInt(key);
+                int status = roadCondObj.getInt(key);
+                roadCond.put(pos, status);
+            } catch (Exception ignored) {}
+        }
+    }
 }

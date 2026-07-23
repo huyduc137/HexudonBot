@@ -337,63 +337,28 @@ public class HexudonGUI extends JFrame {
         }
         return client.getDayInfo();
     }
-
-    private void cmdFetchDay() {
-        lblStatus.setText(" Đang tải thông tin Ngày " + currentDay + " và trạng thái Giao thông...");
-        new Thread(() -> {
-            try {
-                // NÂNG CẤP PHASE 1: Lấy thêm getDayInfo() để cập nhật Giao thông và Deadline
-                int modeIdx = cbPlayMode.getSelectedIndex();
-                JSONObject dayInfo = fetchDayInfoForMode(modeIdx);
-                if (modeIdx == 1) {
-                    // Chế độ 2: Đấu tập chung (Competitive) -> Gọi cổng Competitive
-                    currentState = client.getCompetitiveState();
-                } else {
-                    // Chế độ 1 & 3: Practice & Official -> Gọi cổng mặc định
-                    currentState = client.getState();
+    private List<JSONObject> extractAgentsSafe(JSONObject state, int modeIdx) {
+        List<JSONObject> agents = new ArrayList<>();
+        if (modeIdx == 1 && state.has("open")) {
+            // CHẾ ĐỘ 2: COMPETITIVE PRACTICE (/api/game/competitive/state)
+            JSONObject openObj = state.getJSONObject("open");
+            JSONArray rawAgents = openObj.optJSONArray("agents");
+            if (rawAgents != null) {
+                for (int i = 0; i < rawAgents.length(); i++) {
+                    JSONObject ag = rawAgents.getJSONObject(i);
+                    ag.put("agent_id", String.valueOf(i)); // Tạo ID tự động theo index
+                    int kind = ag.optInt("kind", 0);       // 0: patrol, 1: refuel
+                    ag.put("type", kind == 1 ? "refuel" : "patrol");
+                    agents.add(ag);
                 }
-                currentDay = currentState.optInt("day", currentDay);
-                this.currentDayInfo = dayInfo; // lưu lại để cmdPlanDay() tái dùng, tránh gọi lại sai cổng
-
-                log("--> [DEBUG dayInfo]: " + dayInfo.toString());
-                log("--> [DEBUG state]: " + currentState.toString());
-
-                // 2. Quét mở rộng TẤT CẢ các từ khóa tiếng Anh có thể chỉ Quỹ bước
-                todaySteps = 0;
-                String[] possibleKeys = {
-                        "step_limit", "steps_limit", "steps", "daySteps", "day_steps",
-                        "max_steps", "steps_today", "limit", "budget", "stepLimit"
-                };
-
-                for (String key : possibleKeys) {
-                    if (todaySteps == 0) todaySteps = dayInfo.optInt(key, 0);
-                }
-                for (String key : possibleKeys) {
-                    if (todaySteps == 0) todaySteps = currentState.optInt(key, 0);
-                }
-
-                // Nếu vẫn bằng 0 thì mới phải fallback về mảng dayStepsList tĩnh
-                if (todaySteps == 0 && currentDay < dayStepsList.size()) {
-                    todaySteps = dayStepsList.get(currentDay);
-                    log("--> [CẢNH BÁO]: Không tìm thấy từ khóa bước đi, phải dùng mảng tĩnh (Nguy cơ lỗi 409)!");
-                }
-                if (todaySteps == 0) todaySteps = 50;
-
-                // Cập nhật đường bộ vào lưới HexGrid
-                JSONArray traffics = dayInfo.optJSONArray("traffics");
-                if (traffics == null) traffics = currentState.optJSONArray("traffics");
-                grid.updateTraffic(traffics);
-
-                long endsAt = dayInfo.optLong("endsAt", 0);
-                long timeLeftSec = (endsAt > 0) ? (endsAt - (System.currentTimeMillis() / 1000L)) : 0;
-
-                JSONObject teams = currentState.getJSONObject("teams");
-                JSONObject teamData = teams.optJSONObject(client.teamId);
-                if (teamData == null) teamData = teams.optJSONObject(String.valueOf(client.teamId));
-                if (teamData == null) teamData = new JSONObject();
-
+            }
+        } else if (state.has("teams")) {
+            // CHẾ ĐỘ 1 & 3: PRACTICE / OFFICIAL (/api/game/state)
+            JSONObject teams = state.getJSONObject("teams");
+            JSONObject teamData = teams.optJSONObject(client.teamId);
+            if (teamData == null) teamData = teams.optJSONObject(String.valueOf(client.teamId));
+            if (teamData != null) {
                 JSONArray rawAgents = teamData.optJSONArray("agents");
-                List<JSONObject> agents = new ArrayList<>();
                 if (rawAgents != null) {
                     for (int i = 0; i < rawAgents.length(); i++) {
                         JSONObject ag = rawAgents.getJSONObject(i);
@@ -402,8 +367,50 @@ public class HexudonGUI extends JFrame {
                         agents.add(ag);
                     }
                 }
+            }
+        }
+        return agents;
+    }
+    private void cmdFetchDay() {
+        lblStatus.setText(" Đang tải thông tin Ngày " + currentDay + " và trạng thái Giao thông...");
+        new Thread(() -> {
+            try {
+                int modeIdx = cbPlayMode.getSelectedIndex();
+                JSONObject dayInfo = fetchDayInfoForMode(modeIdx);
+                currentState = (modeIdx == 1) ? client.getCompetitiveState() : client.getState();
+                this.currentDayInfo = dayInfo;
 
+                log("--> [DEBUG dayInfo]: " + dayInfo.toString());
+                log("--> [DEBUG state]: " + currentState.toString());
+
+                // 1. XỬ LÝ NGÀY VÀ QUỸ BƯỚC THEO TỪNG CHẾ ĐỘ
+                if (modeIdx == 1 && currentState.has("open")) {
+                    JSONObject openObj = currentState.getJSONObject("open");
+                    currentDay = currentState.optInt("open_day", openObj.optInt("day", currentDay));
+                    todaySteps = openObj.optInt("steps", 100);
+                    // Cập nhật giao thông từ Object road_condition của chế độ Competitive
+                    grid.updateTrafficFromObject(openObj.optJSONObject("road_condition"));
+                } else {
+                    currentDay = currentState.optInt("day", currentDay);
+                    todaySteps = 0;
+                    String[] possibleKeys = {"step_limit", "steps_limit", "steps", "daySteps", "day_steps", "max_steps", "steps_today", "limit", "budget", "stepLimit"};
+                    for (String key : possibleKeys) if (todaySteps == 0) todaySteps = dayInfo.optInt(key, 0);
+                    for (String key : possibleKeys) if (todaySteps == 0) todaySteps = currentState.optInt(key, 0);
+                    if (todaySteps == 0 && currentDay < dayStepsList.size()) todaySteps = dayStepsList.get(currentDay);
+                    if (todaySteps == 0) todaySteps = 50;
+
+                    JSONArray traffics = dayInfo.optJSONArray("traffics");
+                    if (traffics == null) traffics = currentState.optJSONArray("traffics");
+                    grid.updateTraffic(traffics);
+                }
+
+                // 2. LẤY DANH SÁCH AGENT AN TOÀN
+                List<JSONObject> agents = extractAgentsSafe(currentState, modeIdx);
+
+                long endsAt = dayInfo.optLong("endsAt", 0);
+                long timeLeftSec = (endsAt > 0) ? (endsAt - (System.currentTimeMillis() / 1000L)) : 0;
                 String timeMsg = (timeLeftSec > 0) ? (" (Deadline còn: " + timeLeftSec + "s)") : "";
+
                 log("Đã tải Ngày " + currentDay + " (Quỹ bước thực tế: " + todaySteps + ")" + timeMsg);
                 SwingUtilities.invokeLater(() -> {
                     lblDay.setText("Ngày: " + currentDay + " / " + (dayStepsList.size() - 1) + timeMsg);
@@ -412,6 +419,7 @@ public class HexudonGUI extends JFrame {
                 });
             } catch (Exception e) {
                 log("Lỗi khi tải ngày: " + e.getMessage());
+                e.printStackTrace();
             }
         }).start();
     }
@@ -422,76 +430,51 @@ public class HexudonGUI extends JFrame {
         new Thread(() -> {
             try {
                 int daySteps = this.todaySteps;
-                JSONObject teams = currentState.getJSONObject("teams");
-                JSONObject teamData = teams.optJSONObject(client.teamId);
-                if (teamData == null) teamData = teams.optJSONObject(String.valueOf(client.teamId));
-                if (teamData == null) teamData = new JSONObject();
+                int modeIdx = cbPlayMode.getSelectedIndex();
 
-                JSONArray rawAgents = teamData.optJSONArray("agents");
+                // LẤY AGENT AN TOÀN BẰNG HELPER MỚI
+                List<JSONObject> allAgents = extractAgentsSafe(currentState, modeIdx);
                 List<JSONObject> patrolAgents = new ArrayList<>();
                 List<JSONObject> refuelAgents = new ArrayList<>();
 
-                if (rawAgents != null) {
-                    for (int i = 0; i < rawAgents.length(); i++) {
-                        JSONObject ag = rawAgents.getJSONObject(i);
-                        String aid = ag.has("agent_id") ? String.valueOf(ag.get("agent_id")) : String.valueOf(i);
-                        int pos = ag.has("pos") ? ag.getInt("pos") : ag.getInt("cell");
-                        int fuel = ag.optInt("fuel", 0);
-
-                        boolean isPatrol = "patrol".equals(typeAssignments.getOrDefault(aid, "patrol"));
-                        JSONObject entry = new JSONObject();
-                        entry.put("agent_id", aid);
-                        entry.put("pos", pos);
-                        entry.put("fuel", fuel);
-                        entry.put("fuelLimits", fuelLimits);
-
-                        (isPatrol ? patrolAgents : refuelAgents).add(entry);
+                for (JSONObject ag : allAgents) {
+                    ag.put("fuelLimits", fuelLimits);
+                    if ("patrol".equals(ag.optString("type"))) {
+                        patrolAgents.add(ag);
+                    } else {
+                        refuelAgents.add(ag);
                     }
                 }
 
+                // LẤY DANH SÁCH BRAND ĐÃ ĂN (Trong Competitive thì đọc từ timeline hoặc stands)
                 Set<Integer> brandsSeen = new HashSet<>();
-                JSONArray brandsArr = teamData.optJSONArray("distinct_types");
-                if (brandsArr != null) for (int i = 0; i < brandsArr.length(); i++) brandsSeen.add(brandsArr.getInt(i));
-
-                // NÂNG CẤP PHASE 1: Tính ngân sách thời gian để truyền vào strategy
-                // NÂNG CẤP: Tính ngân sách thời gian để truyền vào strategy
-                // NÂNG CẤP: Tính ngân sách thời gian tùy theo Chế độ chơi
-                // SỬA LỖI: trước đây luôn gọi client.getDayInfo() (cổng Official) bất kể mode,
-                // nên ở Competitive nó đọc sai "endsAt". Giờ tái dùng dayInfo đã fetch đúng cổng
-                // ở cmdFetchDay(); chỉ gọi lại nếu vì lý do gì đó chưa có sẵn.
-                int modeIdx = cbPlayMode.getSelectedIndex();
-                JSONObject dayInfoForBudget = (this.currentDayInfo != null)
-                        ? this.currentDayInfo
-                        : fetchDayInfoForMode(modeIdx);
-                long endsAtSec = dayInfoForBudget.optLong("endsAt", 0);
-                long nowSec = System.currentTimeMillis() / 1000L;
-                long timeAvailableMs;
-
-                if (modeIdx == 0) {
-                    // CHẾ ĐỘ 1 (Practice): Ép AI bung sức 3 giây
-                    timeAvailableMs = 3000L;
-                } else if (endsAtSec > nowSec) {
-                    // CHẾ ĐỘ 2 & 3 (Competitive / Official): Trừ hao 1.5 giây trễ mạng
-                    timeAvailableMs = ((endsAtSec - nowSec) * 1000L) - 1500L;
-                } else {
-                    timeAvailableMs = 3000L;
+                if (modeIdx == 1 && currentState.has("standings")) {
+                    // Chế độ Competitive: Có thể đọc từ standings nếu cần, hoặc khởi tạo rỗng để giành lấy hết
+                } else if (currentState.has("teams")) {
+                    JSONObject teamData = currentState.getJSONObject("teams").optJSONObject(client.teamId);
+                    if (teamData == null) teamData = currentState.getJSONObject("teams").optJSONObject(String.valueOf(client.teamId));
+                    if (teamData != null) {
+                        JSONArray brandsArr = teamData.optJSONArray("distinct_types");
+                        if (brandsArr != null) for (int i = 0; i < brandsArr.length(); i++) brandsSeen.add(brandsArr.getInt(i));
+                    }
                 }
 
-                String strategy = "normal|timeLimit=" + timeAvailableMs;
+                // --- PHẦN BÊN DƯỚI GIỮ NGUYÊN NHƯ CŨ (Tính timeAvailableMs, gọi planner.plan, v.v.) ---
+                JSONObject dayInfoForBudget = (this.currentDayInfo != null) ? this.currentDayInfo : fetchDayInfoForMode(modeIdx);
+                long endsAtSec = dayInfoForBudget.optLong("endsAt", 0);
+                long nowSec = System.currentTimeMillis() / 1000L;
+                long timeAvailableMs = (modeIdx == 0) ? 3000L : (endsAtSec > nowSec ? ((endsAtSec - nowSec) * 1000L) - 1500L : 3000L);
 
-                Map<String, List<Integer>> planned =
-                        planner.plan(grid, patrolAgents, refuelAgents, spots, daySteps, brandsSeen, currentDay, strategy);
+                String strategy = "normal|timeLimit=" + timeAvailableMs;
+                Map<String, List<Integer>> planned = planner.plan(grid, patrolAgents, refuelAgents, spots, daySteps, brandsSeen, currentDay, strategy);
 
                 Map<String, Integer> startPosMap = new HashMap<>();
                 for (JSONObject ag : patrolAgents) startPosMap.put(ag.getString("agent_id"), org.example.util.JsonUtil.getAgentPos(ag));
                 for (JSONObject ag : refuelAgents) startPosMap.put(ag.getString("agent_id"), org.example.util.JsonUtil.getAgentPos(ag));
 
                 PlanValidator.ValidationResult valRes = PlanValidator.validateAndNormalize(grid, planned, startPosMap, daySteps);
-
                 if (!valRes.valid) {
                     log("-> [CẢNH BÁO SANDBOX KHẨN] Kế hoạch AI bị lỗi: " + valRes.reason);
-                    log("-> [ROLLBACK] Kích hoạt chạy lại LazyGreedyPlanner để cứu Ngày " + currentDay + "!");
-
                     DayPlanner fallback = new LazyGreedyPlanner();
                     planned = fallback.plan(grid, patrolAgents, refuelAgents, spots, daySteps, brandsSeen, currentDay, "fallback");
                     valRes = PlanValidator.validateAndNormalize(grid, planned, startPosMap, daySteps);
@@ -509,11 +492,12 @@ public class HexudonGUI extends JFrame {
                 log("Đã lập kế hoạch Ngày " + currentDay + " (Ngân sách AI: " + timeAvailableMs + "ms)!");
                 SwingUtilities.invokeLater(() -> {
                     planJsonArea.setText(jsonActions.toString(2));
-                    mapPanel.setMapData(grid, spots, mapPanel.getAgents(), actions);
+                    mapPanel.setMapData(grid, spots, allAgents, actions);
                     lblStatus.setText(" Kế hoạch đã sẵn sàng. Bạn có thể xem đường dây trên bản đồ và nhấn Gửi.");
                 });
             } catch (Exception e) {
                 log("Lỗi lập kế hoạch: " + e.getMessage());
+                e.printStackTrace();
             }
         }).start();
     }

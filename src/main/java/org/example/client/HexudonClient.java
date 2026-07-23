@@ -15,7 +15,7 @@ import java.util.*;
  * Không chứa logic game; chỉ map các endpoint trong schema.pdf sang phương thức Java.
  *
  * TODO còn thiếu so với schema.pdf (server đã hỗ trợ nhưng client chưa gọi tới):
- *   - GET /api/game/day     -> getDayInfo(): thông tin ngày hiện tại kèm "endsAt" (deadline),
+ *   - GàET /api/game/day     -> getDayInfo(): thông tin ngy hiện tại kèm "endsAt" (deadline),
  *                              cần để canh thời gian phản hồi chính xác hơn polling /state.
  *   - GET /api/game/board   -> getBoardConfig(): cấu hình board độc lập với team (dùng cho spectator/debug).
  *   - GET /api/game/result  -> getResult(): bảng xếp hạng cuối trận + chi tiết điểm từng đội.
