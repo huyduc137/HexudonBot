@@ -17,18 +17,46 @@ import java.util.*;
  */
 public class HexudonEngine {
     private final HexudonClient client;
-    private final boolean practice;
+    private final GameMode mode;
     private final DayPlanner planner;
     private int fuelLimits = 100;
 
+    /** Giữ lại constructor cũ (boolean practice) cho code gọi từ trước, map sang GameMode tương ứng. */
     public HexudonEngine(HexudonClient client, boolean practice) {
-        this(client, practice, new OrienteeringPlanner()); // CẬP NHẬT PHASE 2: Kích hoạt AI Luyện kim!
+        this(client, practice ? GameMode.PRACTICE : GameMode.OFFICIAL);
+    }
+
+    public HexudonEngine(HexudonClient client, GameMode mode) {
+        this(client, mode, new OrienteeringPlanner()); // CẬP NHẬT PHASE 2: Kích hoạt AI Luyện kim!
     }
 
     public HexudonEngine(HexudonClient client, boolean practice, DayPlanner planner) {
+        this(client, practice ? GameMode.PRACTICE : GameMode.OFFICIAL, planner);
+    }
+
+    public HexudonEngine(HexudonClient client, GameMode mode, DayPlanner planner) {
         this.client = client;
-        this.practice = practice;
+        this.mode = mode;
         this.planner = planner;
+    }
+
+    /** dayInfo đúng cổng theo mode (Competitive dùng /api/game/competitive/state, còn lại dùng /api/game/day). */
+    private JSONObject fetchDayInfoForMode() {
+        return (mode == GameMode.COMPETITIVE) ? client.getCompetitiveState() : client.getDayInfo();
+    }
+
+    /** state đúng cổng theo mode. */
+    private JSONObject fetchStateForMode() {
+        return (mode == GameMode.COMPETITIVE) ? client.getCompetitiveState() : client.getState();
+    }
+
+    /** submit đúng cổng theo mode. */
+    private JSONObject submitForMode(int day, List<List<Integer>> actions) {
+        switch (mode) {
+            case PRACTICE: return client.submitPractice(day, actions);
+            case COMPETITIVE: return client.submitCompetitivePractice(day, actions);
+            default: return client.submitActions(day, actions);
+        }
     }
 
     public void run() {
@@ -65,13 +93,14 @@ public class HexudonEngine {
         Map<String, String> typeMap = new HashMap<>();
         for (JSONObject a : assignments) typeMap.put(a.getString("agent_id"), a.getString("type"));
 
+        System.out.println("--- Chế độ chơi: " + mode.label() + " ---");
         for (int day = 0; day < dayStepsList.size(); day++) {
             System.out.println("\n=== Bắt đầu Ngày " + day + " ===");
-            if (!practice) waitForDay(day);
+            if (mode != GameMode.PRACTICE) waitForDay(day);
 
             // NÂNG CẤP PHASE 1: Lấy Day Info thật từ Server để đọc "endsAt" và "traffics"
-            JSONObject dayInfo = client.getDayInfo();
-            JSONObject state = client.getState();
+            JSONObject dayInfo = fetchDayInfoForMode();
+            JSONObject state = fetchStateForMode();
             if ("finished".equals(state.optString("status"))) {
                 System.out.println("Trận đấu đã kết thúc sớm!");
                 break;
@@ -95,6 +124,8 @@ public class HexudonEngine {
                 int daySecs = (daySecArr != null) ? daySecArr.optInt(day, 5) : 5;
                 timeAvailableMs = (daySecs * 1000L) - 1500L;
             }
+            // dayInfo/state ở trên đã được fetchDayInfoForMode()/fetchStateForMode() lấy đúng cổng theo `mode`,
+            // nên endsAtSec ở đây luôn khớp với chế độ đang chạy (kể cả Competitive).
 
             System.out.println("-> [PHASE 1] Giao thông đã cập nhật. Ngân sách AI: " + timeAvailableMs + "ms");
 
@@ -106,16 +137,16 @@ public class HexudonEngine {
             }
 
             int daySteps = dayStepsList.get(day);
-            List<List<Integer>> actions = generateDayPlan(day, state, grid, spots, daySteps, nAgents, typeMap, strategy);
+            List<List<Integer>> actions = generateDayPlan(day, state, dayInfo, grid, spots, daySteps, nAgents, typeMap, strategy);
 
-            System.out.println("Đang gửi lộ trình ngày " + day + "...");
-            JSONObject res = practice ? client.submitPractice(day, actions) : client.submitActions(day, actions);
+            System.out.println("Đang gửi lộ trình ngày " + day + " (" + mode.label() + ")...");
+            JSONObject res = submitForMode(day, actions);
             System.out.println("Kết quả: " + res.toString());
         }
         System.out.println("\n--- Trận đấu hoàn tất! ---");
     }
 
-    private List<List<Integer>> generateDayPlan(int day, JSONObject state, HexGrid grid, List<JSONObject> spots,
+    private List<List<Integer>> generateDayPlan(int day, JSONObject state, JSONObject dayInfo, HexGrid grid, List<JSONObject> spots,
                                                 int daySteps, int nAgents, Map<String, String> typeMap, String strategy) {
         JSONObject teams = state.getJSONObject("teams");
         JSONObject teamData = teams.optJSONObject(client.teamId);
@@ -149,9 +180,68 @@ public class HexudonEngine {
         if (brandsArr != null) for (int i = 0; i < brandsArr.length(); i++) brandsSeen.add(brandsArr.getInt(i));
 
         int currentDay = state.optInt("day", 0);
-        // Truyền tham số strategy mang theo Time-box xuống cho DayPlanner
+
+        List<Integer> oppPositions = new ArrayList<>();
+        JSONArray others = state.optJSONArray("others");
+        if (others != null) {
+            for (int i = 0; i < others.length(); i++) {
+                JSONObject oppTeam = others.getJSONObject(i);
+                JSONArray oppAgents = oppTeam.optJSONArray("agents");
+                if (oppAgents != null) {
+                    for (int j = 0; j < oppAgents.length(); j++) {
+                        oppPositions.add(org.example.util.JsonUtil.getAgentPos(oppAgents.getJSONObject(j)));
+                    }
+                }
+            }
+        }
+
+        // Lọc và trừ hao số lượng Udon nếu đối thủ đang đứng sát nút (Cự ly 0 hoặc 1 bước)
+        List<JSONObject> adaptedSpots = new ArrayList<>();
+        for (JSONObject s : spots) {
+            JSONObject clonedSpot = new JSONObject(s.toString());
+            int sPos = clonedSpot.getInt("pos");
+            int stocks = clonedSpot.getInt("stocks");
+
+            if (stocks > 0) {
+                int threatCount = 0;
+                for (int oppPos : oppPositions) {
+                    if (oppPos == sPos) {
+                        threatCount++; // Đối thủ đang đứng đè lên quán!
+                    } else {
+                        // Kiểm tra xem đối thủ có đứng sát cạnh quán không (1 bước chân)
+                        for (HexGrid.Neighbor nb : grid.neighbors(oppPos)) {
+                            if (nb.pos == sPos) {
+                                threatCount++;
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Trừ hao số phần Udon bằng số lượng kẻ địch đang đe dọa
+                int adaptedStocks = Math.max(0, stocks - threatCount);
+                clonedSpot.put("stocks", adaptedStocks);
+            }
+            adaptedSpots.add(clonedSpot);
+        }
+        // =====================================================================
+
+        long endsAtSec = dayInfo.optLong("endsAt", 0);
+        long nowSec = System.currentTimeMillis() / 1000L;
+        long timeAvailableMs;
+
+        if (mode == GameMode.PRACTICE) {
+            timeAvailableMs = 3000L; // Chế độ Luyện tập: Ép AI bung sức 3 giây
+        } else if (endsAtSec > nowSec) {
+            timeAvailableMs = ((endsAtSec - nowSec) * 1000L) - 1500L;
+        } else {
+            timeAvailableMs = 3000L;
+        }
+
+        strategy = "normal|timeLimit=" + timeAvailableMs;
+
+        // LƯU Ý: Truyền mảng 'adaptedSpots' đã được trừ hao thay vì mảng 'spots' gốc!
         Map<String, List<Integer>> planned =
-                planner.plan(grid, patrolAgents, refuelAgents, spots, daySteps, brandsSeen, currentDay, strategy);
+                planner.plan(grid, patrolAgents, refuelAgents, adaptedSpots, daySteps, brandsSeen, currentDay, strategy);
 
         Map<String, Integer> startPosMap = new HashMap<>();
         for (JSONObject ag : patrolAgents) startPosMap.put(ag.getString("agent_id"), org.example.util.JsonUtil.getAgentPos(ag));
@@ -192,7 +282,7 @@ public class HexudonEngine {
         long deadline = System.currentTimeMillis() + 300_000;
         while (System.currentTimeMillis() < deadline) {
             try {
-                JSONObject state = client.getState();
+                JSONObject state = fetchStateForMode();
                 String status = state.optString("status", "");
                 int current = state.optInt("day", -1);
                 if ("finished".equals(status) || ("in_progress".equals(status) && current == expectedDay)) {

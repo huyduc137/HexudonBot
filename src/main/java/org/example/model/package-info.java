@@ -1,5 +1,5 @@
 /**
- * TODO — GÓI CÒN TRỐNG, CHƯA IMPLEMENT (rủi ro cao nếu làm vội, xem lý do bên dưới).
+ *
  *
  * Hiện toàn bộ code (grid, planner, engine, gui) đang truyền dữ liệu qua lại bằng
  * {@code org.json.JSONObject} thô (ví dụ 1 agent là JSONObject với field "agent_id","pos","fuel").

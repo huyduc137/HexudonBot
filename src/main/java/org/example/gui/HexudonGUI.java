@@ -16,33 +16,18 @@ import java.awt.*;
 import java.util.*;
 import java.util.List;
 
-/**
- * HexudonGUI — cửa sổ điều khiển thủ công theo từng ngày (kết nối, chọn vai trò,
- * lập kế hoạch, xem trước trên bản đồ, sửa tay JSON hành động, gửi).
- *
- * Đã tách khỏi file gốc (~615 dòng, 1 file):
- *   - {@link HexMapPanel}   -> phần vẽ bản đồ (không còn là inner class).
- *   - {@link AgentRoleAssigner} (org.example.engine) -> logic auto-assign vai trò,
- *     dùng chung với HexudonEngine (trước đây bị copy-paste 2 nơi).
- *
- * TODO (chưa làm, xem mô tả chi tiết trong từng file stub tương ứng):
- *   - {@link ConnectionPanel}, {@link AgentRolesPanel}, {@link DailyControlPanel}:
- *     tách tiếp 3 "GROUP" UI hiện đang xây dựng trực tiếp trong constructor (~160 dòng)
- *     thành các JPanel con độc lập, để constructor của HexudonGUI chỉ còn việc "lắp ráp".
- *   - Hiện luôn dùng {@link LazyGreedyPlanner} cứng; khi OrienteeringPlanner xong,
- *     nên thêm 1 JComboBox chọn chiến lược (planner) ngay trong Group 3.
- */
+
 public class HexudonGUI extends JFrame {
 
     private static final String DEFAULT_URL = "https://hexudon.hairbui76.id.vn";
-    private static final String DEFAULT_GAME_ID = "a759fcca-5de2-4fe6-9dff-1a5a3ba33fb5";
+    private static final String DEFAULT_GAME_ID = "a0b4ba77-5239-4333-b4de-1b02a52abe2f";
     private static final String DEFAULT_TEAM_ID = "21";
-    private static final String DEFAULT_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MjEsIm5hbWUiOiJUTEUgU3BlZWRydW4iLCJpc19hZG1pbiI6ZmFsc2UsImlhdCI6MTc4NDU2NTMyNSwiZXhwIjoxNzg0NzM4MTI1fQ.vEWbiFCoNcaIkseS0fH-ebyPY7hK5Mlj9-Dccv5sUpo";
+    private static final String DEFAULT_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MjEsIm5hbWUiOiJUTEUgU3BlZWRydW4iLCJpc19hZG1pbiI6ZmFsc2UsImlhdCI6MTc4NDc5ODM0NywiZXhwIjoxNzg0OTcxMTQ3fQ.JyaPf_kQPcN2OGWAMe_m-xpS7EQPYBg-bh0psXjW_qE";
 
     // UI Components
     private JTextField inputUrl, inputGameId, inputTeamId;
     private JPasswordField inputToken;
-    private JCheckBox chkPractice;
+    private JComboBox<String> cbPlayMode;
     private JButton btnConnect, btnAutoRoles, btnSubmitRoles, btnFetchDay, btnPlanDay, btnSubmitDay;
     private JPanel agentsContainer;
     private List<JComboBox<String>> agentRoleCombos = new ArrayList<>();
@@ -59,9 +44,12 @@ public class HexudonGUI extends JFrame {
     private final Map<String, String> typeAssignments = new HashMap<>();
     private int currentDay = 0;
     private JSONObject currentState;
+    /** dayInfo đã fetch đúng cổng (Practice/Official vs Competitive) ở cmdFetchDay(); cmdPlanDay() tái dùng lại thay vì gọi lại HTTP. */
+    private JSONObject currentDayInfo;
     private int nAgents = 0;
     private int totalSteps = 0;
     private int fuelLimits = 100;
+    private int todaySteps = 50;
 
     /** Chiến lược lập kế hoạch đang dùng cho nút "Tự động Lập kế hoạch". */
     private final DayPlanner planner = new OrienteeringPlanner();
@@ -100,8 +88,12 @@ public class HexudonGUI extends JFrame {
         configGroup.add(inputToken);
 
         configGroup.add(new JLabel("Chế độ chơi:"));
-        chkPractice = new JCheckBox("Luyện tập (Practice Mode)", true);
-        configGroup.add(chkPractice);
+        cbPlayMode = new JComboBox<>(new String[]{
+                "1. Tự luyện tập (Practice)",
+                "2. Đấu tập chung (Competitive)",
+                "3. Thi đấu chính thức (Official)"
+        });
+        configGroup.add(cbPlayMode);
 
         btnConnect = new JButton("Kết nối & Tải Bản đồ");
         btnConnect.setBackground(new Color(46, 204, 113));
@@ -332,14 +324,60 @@ public class HexudonGUI extends JFrame {
         }).start();
     }
 
+    /**
+     * Lấy dayInfo đúng cổng theo Chế độ chơi đang chọn:
+     *   modeIdx == 1 (Competitive) -> /api/game/competitive/state
+     *   modeIdx == 0 hoặc 2 (Practice/Official) -> /api/game/day
+     * Dùng chung cho cmdFetchDay() và cmdPlanDay() để 2 nơi không bao giờ lệch nhau nữa
+     * (trước đây cmdPlanDay() tự gọi lại client.getDayInfo() bất kể mode -> sai cổng ở Competitive).
+     */
+    private JSONObject fetchDayInfoForMode(int modeIdx) {
+        if (modeIdx == 1) {
+            return client.getCompetitiveDayInfo();
+        }
+        return client.getDayInfo();
+    }
+
     private void cmdFetchDay() {
         lblStatus.setText(" Đang tải thông tin Ngày " + currentDay + " và trạng thái Giao thông...");
         new Thread(() -> {
             try {
                 // NÂNG CẤP PHASE 1: Lấy thêm getDayInfo() để cập nhật Giao thông và Deadline
-                JSONObject dayInfo = client.getDayInfo();
-                currentState = client.getState();
+                int modeIdx = cbPlayMode.getSelectedIndex();
+                JSONObject dayInfo = fetchDayInfoForMode(modeIdx);
+                if (modeIdx == 1) {
+                    // Chế độ 2: Đấu tập chung (Competitive) -> Gọi cổng Competitive
+                    currentState = client.getCompetitiveState();
+                } else {
+                    // Chế độ 1 & 3: Practice & Official -> Gọi cổng mặc định
+                    currentState = client.getState();
+                }
                 currentDay = currentState.optInt("day", currentDay);
+                this.currentDayInfo = dayInfo; // lưu lại để cmdPlanDay() tái dùng, tránh gọi lại sai cổng
+
+                log("--> [DEBUG dayInfo]: " + dayInfo.toString());
+                log("--> [DEBUG state]: " + currentState.toString());
+
+                // 2. Quét mở rộng TẤT CẢ các từ khóa tiếng Anh có thể chỉ Quỹ bước
+                todaySteps = 0;
+                String[] possibleKeys = {
+                        "step_limit", "steps_limit", "steps", "daySteps", "day_steps",
+                        "max_steps", "steps_today", "limit", "budget", "stepLimit"
+                };
+
+                for (String key : possibleKeys) {
+                    if (todaySteps == 0) todaySteps = dayInfo.optInt(key, 0);
+                }
+                for (String key : possibleKeys) {
+                    if (todaySteps == 0) todaySteps = currentState.optInt(key, 0);
+                }
+
+                // Nếu vẫn bằng 0 thì mới phải fallback về mảng dayStepsList tĩnh
+                if (todaySteps == 0 && currentDay < dayStepsList.size()) {
+                    todaySteps = dayStepsList.get(currentDay);
+                    log("--> [CẢNH BÁO]: Không tìm thấy từ khóa bước đi, phải dùng mảng tĩnh (Nguy cơ lỗi 409)!");
+                }
+                if (todaySteps == 0) todaySteps = 50;
 
                 // Cập nhật đường bộ vào lưới HexGrid
                 JSONArray traffics = dayInfo.optJSONArray("traffics");
@@ -366,7 +404,7 @@ public class HexudonGUI extends JFrame {
                 }
 
                 String timeMsg = (timeLeftSec > 0) ? (" (Deadline còn: " + timeLeftSec + "s)") : "";
-                log("Đã tải Ngày " + currentDay + timeMsg + ". Đã cập nhật trạng thái tắc đường trên HexGrid.");
+                log("Đã tải Ngày " + currentDay + " (Quỹ bước thực tế: " + todaySteps + ")" + timeMsg);
                 SwingUtilities.invokeLater(() -> {
                     lblDay.setText("Ngày: " + currentDay + " / " + (dayStepsList.size() - 1) + timeMsg);
                     mapPanel.setMapData(grid, spots, agents, new ArrayList<>());
@@ -383,8 +421,7 @@ public class HexudonGUI extends JFrame {
         lblStatus.setText(" Đang tính toán đường đi...");
         new Thread(() -> {
             try {
-                int daySteps = (currentDay < dayStepsList.size()) ? dayStepsList.get(currentDay) : currentState.optInt("steps_today", 50);
-
+                int daySteps = this.todaySteps;
                 JSONObject teams = currentState.getJSONObject("teams");
                 JSONObject teamData = teams.optJSONObject(client.teamId);
                 if (teamData == null) teamData = teams.optJSONObject(String.valueOf(client.teamId));
@@ -418,15 +455,23 @@ public class HexudonGUI extends JFrame {
 
                 // NÂNG CẤP PHASE 1: Tính ngân sách thời gian để truyền vào strategy
                 // NÂNG CẤP: Tính ngân sách thời gian để truyền vào strategy
-                long endsAtSec = client.getDayInfo().optLong("endsAt", 0);
+                // NÂNG CẤP: Tính ngân sách thời gian tùy theo Chế độ chơi
+                // SỬA LỖI: trước đây luôn gọi client.getDayInfo() (cổng Official) bất kể mode,
+                // nên ở Competitive nó đọc sai "endsAt". Giờ tái dùng dayInfo đã fetch đúng cổng
+                // ở cmdFetchDay(); chỉ gọi lại nếu vì lý do gì đó chưa có sẵn.
+                int modeIdx = cbPlayMode.getSelectedIndex();
+                JSONObject dayInfoForBudget = (this.currentDayInfo != null)
+                        ? this.currentDayInfo
+                        : fetchDayInfoForMode(modeIdx);
+                long endsAtSec = dayInfoForBudget.optLong("endsAt", 0);
                 long nowSec = System.currentTimeMillis() / 1000L;
                 long timeAvailableMs;
 
-                if (chkPractice.isSelected()) {
-                    // NẾU LÀ CHẾ ĐỘ PRACTICE: Ép buộc AI phải suy nghĩ đúng 3 giây (3000ms)
-                    timeAvailableMs = 5000L;
+                if (modeIdx == 0) {
+                    // CHẾ ĐỘ 1 (Practice): Ép AI bung sức 3 giây
+                    timeAvailableMs = 3000L;
                 } else if (endsAtSec > nowSec) {
-                    // THI ĐẤU THẬT: Trừ hao 1.5 giây trễ mạng
+                    // CHẾ ĐỘ 2 & 3 (Competitive / Official): Trừ hao 1.5 giây trễ mạng
                     timeAvailableMs = ((endsAtSec - nowSec) * 1000L) - 1500L;
                 } else {
                     timeAvailableMs = 3000L;
@@ -477,8 +522,7 @@ public class HexudonGUI extends JFrame {
         String jsonStr = planJsonArea.getText().trim();
         if (jsonStr.isEmpty()) return;
 
-        boolean isPractice = chkPractice.isSelected();
-        lblStatus.setText(" Đang gửi lộ trình đi cho Ngày " + currentDay + (isPractice ? " (Chế độ Practice)" : " (Chế độ Active)") + "...");
+        lblStatus.setText(" Đang gửi lộ trình đi cho Ngày " + currentDay + " (" + cbPlayMode.getSelectedItem() + ")...");
 
         new Thread(() -> {
             try {
@@ -491,8 +535,19 @@ public class HexudonGUI extends JFrame {
                     actions.add(list);
                 }
 
-                JSONObject res = isPractice ? client.submitPractice(currentDay, actions) : client.submitActions(currentDay, actions);
-                log("Gửi thành công Ngày " + currentDay + "! Máy chủ trả về: " + res.toString());
+                int modeIdx = cbPlayMode.getSelectedIndex();
+                String modeName = cbPlayMode.getSelectedItem().toString();
+
+                JSONObject res;
+                if (modeIdx == 0) {
+                    res = client.submitPractice(currentDay, actions);
+                } else if (modeIdx == 1) {
+                    res = client.submitCompetitivePractice(currentDay, actions);
+                } else {
+                    res = client.submitActions(currentDay, actions);
+                }
+
+                log("Gửi thành công Ngày " + currentDay + " (" + modeName + ")! Máy chủ trả về: " + res.toString());
 
                 currentDay++;
                 SwingUtilities.invokeLater(() -> {

@@ -3,48 +3,74 @@ package org.example.grid;
 import java.util.*;
 
 /**
- * TODO — CHƯA IMPLEMENT. Đây là nơi cần code công thức traffic THẬT theo luật thi,
- * thay vì "hazard heatmap" phỏng đoán.
+ * TrafficTracker — PHASE 4: POST-DAY LEARNING & ADAPTATION
  *
- * Công thức chính xác (theo đề bài / theo server):
- *   traffic(cell) = ( tổng số "bước dừng lại" của MỌI agent, MỌI đội, trên ô đường đó,
- *                      trong 2 ngày trước đó (hôm qua + hôm kia) )  /  số đội (players).
- *
- *   - Ngày 1: mọi đường ở trạng thái SMOOTH.
- *   - Ngày 2: chỉ tính traffic của Ngày 1 (chưa đủ 2 ngày).
- *   - Từ Ngày 3: tính traffic gộp của (ngày N-1) + (ngày N-2).
- *
- *   status = SMOOTH   nếu traffic <  busyThreshold
- *          = CONGESTED nếu busyThreshold <= traffic < jammedThreshold
- *          = JAM       nếu traffic >= jammedThreshold
- *
- * Nguồn dữ liệu đầu vào cho lớp này:
- *   - Endpoint "/api/game/state" trả field "traffics": [{pos, status}, ...] — server đã tính sẵn
- *     trạng thái đường cho ngày hiện tại, KHÔNG cần tự tính lại bằng tay khi thi đấu thật.
- *   - Lớp này chỉ thật sự cần thiết nếu muốn TỰ DỰ ĐOÁN trạng thái đường của các ngày
- *     TƯƠNG LAI (N+1, N+2) trước khi server công bố, để lập kế hoạch dài hạn hơn 1 ngày.
- *
- * Việc cần làm:
- *   1. Lưu lịch sử "số bước dừng lại tại mỗi ô đường" theo ngày, cho cả đội mình
- *      (biết chắc) và các đội khác (suy ra từ "others" trong /api/game/day, xem model.AgentSnapshot).
- *   2. Viết hàm predictNextDayStatus(HexGrid grid, int busyThreshold, int jammedThreshold)
- *      trả về Map<pos, status> dự đoán, dùng cho OrienteeringPlanner khi lập kế hoạch
- *      nhiều ngày (multi-day lookahead).
- *   3. Cân nhắc: đội mình có thể ảnh hưởng đến traffic của chính mình ở ngày sau
- *      (né lặp lại đường mình vừa "làm tắc").
+ * Lưu trữ lịch sử các bước dừng lại (WAIT) của xe trên các ô Đường bộ (ROAD).
+ * Dự đoán tình trạng tắc đường của ngày mai dựa trên công thức của Server:
+ * Traffic = (Tổng bước dừng 2 ngày trước của mọi đội) / Số đội.
  */
 public class TrafficTracker {
 
-    /** history.get(day).get(pos) = số bước dừng lại tại ô 'pos' trong ngày đó (mọi đội). */
+    // Lưu trữ số bước dừng lại của đội mình theo cấu trúc: Ngày -> (Ô (Pos) -> Số bước dừng)
     private final Map<Integer, Map<Integer, Integer>> stopStepsByDay = new HashMap<>();
 
-    public void recordDay(int day, Map<Integer, Integer> stopStepsPerCell) {
-        stopStepsByDay.put(day, stopStepsPerCell);
-        // TODO: implement
+    /**
+     * Ghi nhận lịch sử di chuyển và chờ đợi vào cuối mỗi ngày sau khi đã chốt kế hoạch.
+     */
+    public void recordDay(int day, Map<String, List<Integer>> myActions, Map<String, Integer> startPosMap, HexGrid grid) {
+        Map<Integer, Integer> stopsToday = new HashMap<>();
+
+        for (Map.Entry<String, List<Integer>> entry : myActions.entrySet()) {
+            int curPos = startPosMap.getOrDefault(entry.getKey(), 0);
+
+            for (int act : entry.getValue()) {
+                if (act < 0) { // Lệnh Wait (Số âm)
+                    int waitSteps = -act;
+                    // Chỉ tính tắc đường cho các ô là Đường Bộ (Road)
+                    if (grid.cells.get(curPos) == HexGrid.ROAD) {
+                        stopsToday.put(curPos, stopsToday.getOrDefault(curPos, 0) + waitSteps);
+                    }
+                } else if (act >= 0 && act <= 5) { // Lệnh di chuyển
+                    for (HexGrid.Neighbor nb : grid.neighbors(curPos)) {
+                        if (nb.direction == act) {
+                            curPos = nb.pos;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        stopStepsByDay.put(day, stopsToday);
     }
 
-    public Map<Integer, Integer> predictNextDayStatus(HexGrid grid, int numTeams,
-                                                        int busyThreshold, int jammedThreshold) {
-        throw new UnsupportedOperationException("TODO: chưa implement dự đoán traffic ngày kế tiếp");
+    /**
+     * Tự động dự đoán tình trạng giao thông ngày mai do CHÍNH BẢN THÂN mình gây ra.
+     * Có thể dùng để nạp vào HexGrid trước khi lập kế hoạch dài hạn.
+     */
+    public Map<Integer, Integer> predictNextDaySelfTraffic(HexGrid grid, int nextDay, int numTeams,
+                                                           int busyThreshold, int jammedThreshold) {
+        Map<Integer, Integer> predictions = new HashMap<>();
+
+        // Lấy lịch sử của 2 ngày trước đó
+        Map<Integer, Integer> yesterday = stopStepsByDay.getOrDefault(nextDay - 1, new HashMap<>());
+        Map<Integer, Integer> dayBefore = stopStepsByDay.getOrDefault(nextDay - 2, new HashMap<>());
+
+        for (int pos = 0; pos < grid.cells.size(); pos++) {
+            if (grid.cells.get(pos) == HexGrid.ROAD) {
+                int totalStops = yesterday.getOrDefault(pos, 0) + dayBefore.getOrDefault(pos, 0);
+
+                // Công thức theo chuẩn Procon: Tổng bước dừng / Số lượng đội
+                int trafficScore = totalStops / Math.max(1, numTeams);
+
+                if (trafficScore >= jammedThreshold) {
+                    predictions.put(pos, HexGrid.JAM);
+                } else if (trafficScore >= busyThreshold) {
+                    predictions.put(pos, HexGrid.CONGESTED);
+                } else {
+                    predictions.put(pos, HexGrid.SMOOTH);
+                }
+            }
+        }
+        return predictions;
     }
 }

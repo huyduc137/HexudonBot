@@ -96,10 +96,18 @@ public class HexudonClient {
         return get("/api/game/state", Map.of("game_id", gameId));
     }
 
-    /** TODO: chưa dùng ở Engine/GUI — nên thay dần polling getState() bằng endpoint chuyên dụng này. */
     public JSONObject getDayInfo() {
         return get("/api/game/day", Map.of("game_id", gameId));
     }
+
+    public JSONObject getCompetitiveDayInfo() {
+        return get("/api/game/competitive/state", Map.of("game_id", gameId));
+    }
+
+    public JSONObject getCompetitiveState() {
+        return get("/api/game/competitive/state", Map.of("game_id", gameId));
+    }
+
 
     /** TODO: chưa dùng — hữu ích để đọc điểm số / xếp hạng cuối trận. */
     public JSONObject getResult() {
@@ -125,6 +133,12 @@ public class HexudonClient {
     public JSONObject submitPractice(int day, List<List<Integer>> actions) {
         return postActions("/api/game/practice/actions", day, actions);
     }
+
+    public JSONObject submitCompetitivePractice(int day, List<List<Integer>> actions) {
+        return postActions("/api/game/competitive/actions", day, actions);
+    }
+
+
 
     private JSONObject postActions(String endpoint, int day, List<List<Integer>> actions) {
         JSONArray actionsArr = new JSONArray();
